@@ -30,7 +30,7 @@ print_menu() {
     echo "╔══════════════════════════════════════════════╗"
     echo "║       Frappe Bench Interactive Setup         ║"
     echo "╠══════════════════════════════════════════════╣"
-    printf "║  %-4s %-20s %-20s║\n" "No" "Field" "Value"
+    printf "║  %-4s %-20s %-30s║\n" "No" "Field" "Value"
     echo "╠══════════════════════════════════════════════╣"
     printf "║  %-4s %-20s %-30s║\n" "1)" "Frappe Version"   "$FRAPPE_VERSION"
     printf "║  %-4s %-20s %-30s║\n" "2)" "DB Host"          "$DB_HOST"
