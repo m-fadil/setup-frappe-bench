@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-trap 'echo; echo "Error pada baris $LINENO. Exiting."; exit 1' ERR
+trap 'tput cnorm 2>/dev/null; echo; echo "Error pada baris $LINENO. Exiting."; exit 1' ERR
+
+# Pastikan cursor kembali normal jika script dihentikan
+cleanup() {
+    tput cnorm 2>/dev/null
+    echo
+}
+trap cleanup EXIT
 
 # =========================
 # DEFAULT CONFIG
@@ -20,27 +27,97 @@ SITE_NAME="development.localhost"
 BENCH_NAME="frappe-bench"
 
 # =========================
-# MENU
+# LABELS & KEYS
 # =========================
-print_menu() {
+LABELS=(
+    "Frappe Version"
+    "DB Host"
+    "DB Port"
+    "Redis Cache"
+    "Redis Queue"
+    "Redis SocketIO"
+    "DB Name"
+    "DB Root User"
+    "DB Root Password"
+    "Admin Password"
+    "Site Name"
+    "Bench Name"
+)
+
+KEYS=(
+    FRAPPE_VERSION
+    DB_HOST
+    DB_PORT
+    REDIS_CACHE
+    REDIS_QUEUE
+    REDIS_SOCKETIO
+    DB_NAME
+    DB_ROOT_USER
+    DB_ROOT_PASS
+    ADMIN_PASS
+    SITE_NAME
+    BENCH_NAME
+)
+
+SECRET_KEYS=(DB_ROOT_PASS ADMIN_PASS)
+
+is_secret() {
+    local key="$1"
+    for s in "${SECRET_KEYS[@]}"; do
+        [[ "$s" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+get_display_value() {
+    local key="$1"
+    if is_secret "$key"; then
+        echo "********"
+    else
+        echo "${!key}"
+    fi
+}
+
+# =========================
+# TERMINAL HELPERS
+# =========================
+TOTAL_ITEMS=$(( ${#LABELS[@]} + 2 )) # items + Apply + Quit
+MENU_ITEMS=$(( ${#LABELS[@]} ))       # index 0..N-1 = config, N = Apply, N+1 = Quit
+IDX_APPLY=$(( ${#LABELS[@]} ))
+IDX_QUIT=$(( ${#LABELS[@]} + 1 ))
+
+draw_menu() {
+    local selected="$1"
+    local label_width=20
+
     clear
     echo "==== Frappe Bench Interactive Setup ===="
+    echo "  Gunakan ARROW UP/DOWN untuk navigasi, ENTER untuk pilih."
     echo
-    echo "  1)  Frappe Version   : $FRAPPE_VERSION"
-    echo "  2)  DB Host          : $DB_HOST"
-    echo "  3)  DB Port          : $DB_PORT"
-    echo "  4)  Redis Cache      : $REDIS_CACHE"
-    echo "  5)  Redis Queue      : $REDIS_QUEUE"
-    echo "  6)  Redis SocketIO   : $REDIS_SOCKETIO"
-    echo "  7)  DB Name          : $DB_NAME"
-    echo "  8)  DB Root User     : $DB_ROOT_USER"
-    echo "  9)  DB Root Password : ********"
-    echo "  10) Admin Password   : ********"
-    echo "  11) Site Name        : $SITE_NAME"
-    echo "  12) Bench Name       : $BENCH_NAME"
+
+    for i in "${!LABELS[@]}"; do
+        local val
+        val=$(get_display_value "${KEYS[$i]}")
+        if [[ "$i" -eq "$selected" ]]; then
+            printf "  \e[7m %-${label_width}s : %-30s \e[0m\n" "${LABELS[$i]}" "$val"
+        else
+            printf "    %-${label_width}s : %s\n" "${LABELS[$i]}" "$val"
+        fi
+    done
+
     echo
-    echo "  a) Apply & Run"
-    echo "  q) Quit"
+    if [[ "$selected" -eq "$IDX_APPLY" ]]; then
+        printf "  \e[7m [ Apply & Run ] \e[0m\n"
+    else
+        printf "    [ Apply & Run ]\n"
+    fi
+
+    if [[ "$selected" -eq "$IDX_QUIT" ]]; then
+        printf "  \e[7m [ Quit ]        \e[0m\n"
+    else
+        printf "    [ Quit ]\n"
+    fi
+
     echo
 }
 
@@ -50,15 +127,14 @@ print_menu() {
 edit_value() {
     local label="$1"
     local var_name="$2"
-    local is_secret="${3:-false}"
     local current="${!var_name}"
-    local input=""
-    local char
+    local secret=false
+    is_secret "$var_name" && secret=true
 
     clear
     echo "==== Edit: $label ===="
     echo
-    if [[ "$is_secret" == "true" ]]; then
+    if [[ "$secret" == "true" ]]; then
         echo "  Nilai saat ini : ********"
     else
         echo "  Nilai saat ini : $current"
@@ -66,29 +142,30 @@ edit_value() {
     echo
     echo "  Tekan ESC untuk batal, ENTER untuk simpan."
     echo
-
-    # Tampilkan prompt di baris yang sama, lalu baca karakter
     printf "  Nilai baru : "
+
+    local input=""
+    local char
+
+    tput cnorm  # tampilkan cursor
 
     while true; do
         IFS= read -r -s -n1 char
 
-        # ESC
         if [[ "$char" == $'\x1b' ]]; then
             IFS= read -r -s -n2 -t 0.05 _ || true
             echo
             echo
             echo "  Batal."
             sleep 0.4
+            tput civis
             return
         fi
 
-        # Enter
         if [[ "$char" == "" || "$char" == $'\r' ]]; then
             break
         fi
 
-        # Backspace
         if [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
             if [[ ${#input} -gt 0 ]]; then
                 input="${input%?}"
@@ -97,9 +174,8 @@ edit_value() {
             continue
         fi
 
-        # Karakter biasa
         input+="$char"
-        if [[ "$is_secret" == "true" ]]; then
+        if [[ "$secret" == "true" ]]; then
             printf '*'
         else
             printf '%s' "$char"
@@ -112,6 +188,7 @@ edit_value() {
         echo
         echo "  Input kosong, nilai tidak diubah."
         sleep 0.8
+        tput civis
         return
     fi
 
@@ -119,12 +196,14 @@ edit_value() {
     echo
     echo "  Tersimpan."
     sleep 0.5
+    tput civis
 }
 
 # =========================
 # RUN BENCH
 # =========================
 run_bench() {
+    tput cnorm
     clear
     echo "==== Menjalankan Bench Setup ===="
     echo
@@ -159,25 +238,51 @@ run_bench() {
 # =========================
 # MAIN LOOP
 # =========================
-while true; do
-    print_menu
-    read -rp "  Pilih opsi : " choice
+tput civis  # sembunyikan cursor di menu
 
-    case "$choice" in
-        1)  edit_value "Frappe Version"   FRAPPE_VERSION ;;
-        2)  edit_value "DB Host"          DB_HOST ;;
-        3)  edit_value "DB Port"          DB_PORT ;;
-        4)  edit_value "Redis Cache"      REDIS_CACHE ;;
-        5)  edit_value "Redis Queue"      REDIS_QUEUE ;;
-        6)  edit_value "Redis SocketIO"   REDIS_SOCKETIO ;;
-        7)  edit_value "DB Name"          DB_NAME ;;
-        8)  edit_value "DB Root User"     DB_ROOT_USER ;;
-        9)  edit_value "DB Root Password" DB_ROOT_PASS true ;;
-        10) edit_value "Admin Password"   ADMIN_PASS   true ;;
-        11) edit_value "Site Name"        SITE_NAME ;;
-        12) edit_value "Bench Name"       BENCH_NAME ;;
-        a|A) run_bench; exit 0 ;;
-        q|Q) echo; echo "  Keluar."; echo; exit 0 ;;
-        *)  echo; echo "  Opsi tidak valid."; sleep 0.5 ;;
-    esac
+selected=0
+
+while true; do
+    draw_menu "$selected"
+
+    # Baca input arrow / enter
+    IFS= read -r -s -n1 char
+
+    if [[ "$char" == $'\x1b' ]]; then
+        IFS= read -r -s -n1 char2
+        IFS= read -r -s -n1 char3
+
+        if [[ "$char2" == "[" ]]; then
+            case "$char3" in
+                A)  # Arrow UP
+                    (( selected = (selected - 1 + TOTAL_ITEMS) % TOTAL_ITEMS ))
+                    ;;
+                B)  # Arrow DOWN
+                    (( selected = (selected + 1) % TOTAL_ITEMS ))
+                    ;;
+            esac
+        fi
+        continue
+    fi
+
+    # ENTER
+    if [[ "$char" == "" || "$char" == $'\r' ]]; then
+        if [[ "$selected" -lt "$MENU_ITEMS" ]]; then
+            edit_value "${LABELS[$selected]}" "${KEYS[$selected]}"
+        elif [[ "$selected" -eq "$IDX_APPLY" ]]; then
+            run_bench
+            exit 0
+        elif [[ "$selected" -eq "$IDX_QUIT" ]]; then
+            clear
+            echo "  Keluar."
+            exit 0
+        fi
+    fi
+
+    # Shortcut q
+    if [[ "$char" == "q" || "$char" == "Q" ]]; then
+        clear
+        echo "  Keluar."
+        exit 0
+    fi
 done
